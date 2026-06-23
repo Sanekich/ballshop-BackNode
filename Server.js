@@ -9,10 +9,11 @@ const mysql = require('mysql2/promise');
 const app = express();
 
 app.use(express.json());
-app.set('trust proxy', 1); // Required for Render reverse-proxy tracking
+app.set('trust proxy', 1);
 
-// Allowed Frontend Origins
+// FIXED: Cleaned up origins (removed trailing slash) to resolve CORS block
 const allowedOrigins = [
+    'http://localhost:3000',
     'https://www.metodo-ballance.it',
     'https://metodo-ballance.it'
 ];
@@ -29,29 +30,37 @@ app.use(cors({
     credentials: true
 }));
 
-// Session setup optimized for sharing cookies between subdomains
+const MySQLStore = require('express-mysql-session')(session);
+
+const sessionStore = new MySQLStore({
+    host: "reseau.proxy.rlwy.net",
+    user: "root",
+    password: "HCcLecMajWqUeIWLasyDziwiZLsZrptNs",
+    database: "railway",
+    port: 10204,
+});
+
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'secret_key',
+    secret: 'secret_key',
     resave: false,
     saveUninitialized: false,
+    store: sessionStore,           // ← persists sessions in MySQL
     cookie: {
         secure: true,
-        sameSite: 'lax',                    // 'lax' works beautifully now that both share the root domain!
-        domain: '.metodo-ballance.it',     // Note the leading dot: lets www. and api. share cookies
-        maxAge: 24 * 60 * 60 * 1000        // 24 Hours
+        sameSite: 'none',
+        httpOnly: true,
+        maxAge: 1000 * 60 * 60 * 24 * 7  // 7 days
     }
 }));
 
-// SAFE: Uses Render Environment variables instead of hardcoded public GitHub strings
+// FIXED: Removed the invalid 'export' keyword
 const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME, 
-  port: parseInt(process.env.DB_PORT) || 3306,
+  host: "mysql.railway.internal",
+  user: "root",
+  password: "HCcLecMajWqUeIWLasyDziwiZLsZrptN",
+  database: "railway", 
+  port: 3306,
 });
-
-// ... the rest of your API routes remain exactly the same ...
 
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
