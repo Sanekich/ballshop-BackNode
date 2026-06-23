@@ -10,8 +10,22 @@ const app = express();
 
 app.use(express.json());
 
+// FIXED: Cleaned up origins (removed trailing slash) to resolve CORS block
+const allowedOrigins = [
+    'http://localhost:3000',
+    'https://www.metodo-ballance.it',
+    'https://metodo-ballance.it'
+];
+
 app.use(cors({
-    origin: 'https://www.metodo-ballance.it/',
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 
@@ -20,12 +34,13 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: true,      //потом поменять
+        secure: true, // Crucial since both Render and your domain use HTTPS
+        sameSite: 'none' // Required for cross-domain cookies between Render and your domain
     }
 }));
 
-
-export const db = mysql.createPool({
+// FIXED: Removed the invalid 'export' keyword
+const db = mysql.createPool({
   host: "mysql.railway.internal",
   user: "root",
   password: "HCcLecMajWqUeIWLasyDziwiZLsZrptN",
