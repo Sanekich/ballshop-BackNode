@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json());
 
 app.use(cors({
-    origin: 'http://localhost:3000',
+    origin: 'https://www.metodo-ballance.it/',
     credentials: true
 }));
 
@@ -20,17 +20,17 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false,      //потом поменять
+        secure: true,      //потом поменять
     }
 }));
 
-const db = mysql.createPool({
-    host: "127.0.0.1",
-    port: "3306",
-    user: "root",
-    password: "root",
-    database: "BallanceShop",
-    waitForConnections: true
+
+export const db = mysql.createPool({
+  host: "mysql.railway.internal",
+  user: "root",
+  password: "HCcLecMajWqUeIWLasyDziwiZLsZrptN",
+  database: "railway", 
+  port: 3306,
 });
 
 app.post('/api/register', async (req, res) => {
