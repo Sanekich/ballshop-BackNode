@@ -9,6 +9,7 @@ const mysql = require('mysql2/promise');
 const app = express();
 
 app.use(express.json());
+app.set('trust proxy', 1);
 
 // FIXED: Cleaned up origins (removed trailing slash) to resolve CORS block
 const allowedOrigins = [
