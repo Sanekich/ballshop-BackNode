@@ -4,14 +4,14 @@ const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
 const bcrypt = require('bcrypt');
-const mysql = require('mysql2/promise');
+const mongoose = require('mongoose');
+const MongoStore = require('connect-mongo').default;
 
 const app = express();
 
 app.use(express.json());
 app.set('trust proxy', 1);
 
-// FIXED: Cleaned up origins (removed trailing slash) to resolve CORS block
 const allowedOrigins = [
     'http://localhost:3000',
     'https://www.metodo-ballance.it',
@@ -30,37 +30,64 @@ app.use(cors({
     credentials: true
 }));
 
-const MySQLStore = require('express-mysql-session')(session);
+const MONGO_URI = process.env.MONGO_URI;
 
-const sessionStore = new MySQLStore({
-    host: "reseau.proxy.rlwy.net",
-    user: "root",
-    password: "HCcLecMajWqUeIWLasyDziwiZLsZrptNs",
-    database: "railway",
-    port: 10204,
-});
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('Connected to MongoDB successfully.'))
+    .catch(err => console.error('MongoDB connection error:', err));
+
+const userSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true, lowercase: true },
+    password: { type: String, required: true },
+    blocked: { type: Number, default: 0 }
+}, { timestamps: { createdAt: 'created_at', updatedAt: false } });
+
+const User = mongoose.model('User', userSchema);
+
+const messageSchema = new mongoose.Schema({
+    username: { type: String, required: true },
+    userEmail: { type: String, required: true },
+    message: { type: String }
+}, { timestamps: { createdAt: 'created_at', updatedAt: false } });
+
+const Message = mongoose.model('Message', messageSchema);
+
+const orderSchema = new mongoose.Schema({
+    customer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    customer_name: { type: String, required: true },
+    customer_surname: { type: String, required: true },
+    phone: { type: String, required: true },
+    email: { type: String, required: true },
+    address: { type: String, required: true },
+    city: { type: String, required: true },
+    zip: { type: String, required: true },
+    cart: { type: Array, required: true },
+    total: { type: Number, required: true },
+    status: { 
+        type: String, 
+        enum: ['pending', 'processing', 'shipped', 'completed', 'cancelled'], 
+        default: 'pending' 
+    }
+}, { timestamps: { createdAt: 'created_at', updatedAt: false } });
+
+const Order = mongoose.model('Order', orderSchema);
 
 app.use(session({
-    secret: 'secret_key',
+    secret: process.env.SESSION_SECRET || 'secret_key',
     resave: false,
     saveUninitialized: false,
-    store: sessionStore,           // ← persists sessions in MySQL
+    store: MongoStore.create({
+        mongoUrl: MONGO_URI,
+        collectionName: 'sessions'
+    }),
     cookie: {
-        secure: true,
-        sameSite: 'none',
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
         httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24 * 7  // 7 days
+        maxAge: 1000 * 60 * 60 * 24 * 7
     }
 }));
-
-// FIXED: Removed the invalid 'export' keyword
-const db = mysql.createPool({
-  host: "mysql.railway.internal",
-  user: "root",
-  password: "HCcLecMajWqUeIWLasyDziwiZLsZrptN",
-  database: "railway", 
-  port: 3306,
-});
 
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
@@ -70,43 +97,34 @@ app.post('/api/register', async (req, res) => {
             return res.status(401).json({ error: 'missing fields' });
         }
 
-        const [Users] = await db.query(
-            'SELECT * FROM Users WHERE Email = ?',
-            [email]
-        );
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
 
-        if (Users.length !== 0) {
-            return res.status(401).json({
-                error: 'User with this email already exists'
-            });
+        if (existingUser) {
+            return res.status(401).json({ error: 'User with this email already exists' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const [result] = await db.query(
-            'INSERT INTO Users (Name, Email, password) VALUES (?, ?, ?)',
-            [username, email, hashedPassword]
-        );
+        const newUser = await User.create({
+            name: username,
+            email: email.toLowerCase(),
+            password: hashedPassword
+        });
 
         req.session.user = {
-            id: result.insertId,
-            name: username,
-            email: email
+            id: newUser._id,
+            name: newUser.name,
+            email: newUser.email
         };
 
         req.session.save((err) => {
-            if (err) {
-                return res.status(500).json({ error: 'Session error' });
-            }
+            if (err) return res.status(500).json({ error: 'Session error' });
             res.status(200).json({ message: 'Register successful' });
         });
 
     } catch (err) {
         console.error(err);
-
-        res.status(500).json({
-            error: 'Internal server error'
-        });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -115,58 +133,39 @@ app.post('/api/login', async (req, res) => {
 
     try {
         if (!email || !password) {
-            return res.status(401).json({
-                error: 'missing fields'
-            });
+            return res.status(401).json({ error: 'missing fields' });
         }
 
-        const [Users] = await db.query(
-            'SELECT * FROM Users WHERE Email = ?',
-            [email]
-        );
+        const user = await User.findOne({ email: email.toLowerCase() });
 
-
-
-        if (Users.length === 0) {
-            return res.status(401).json({
-                error: 'User not found'
-            });
+        if (!user) {
+            return res.status(401).json({ error: 'User not found' });
         }
 
-        if(Users[0].blocked == 1){
-            return res.status(401).json({error: 'User blocked'});
+        if (user.blocked === 1) {
+            return res.status(401).json({ error: 'User blocked' });
         }
 
-        const match = await bcrypt.compare(
-            password,
-            Users[0].password
-        );
+        const match = await bcrypt.compare(password, user.password);
 
         if (!match) {
-            return res.status(401).json({
-                error: 'incorrect password'
-            });
+            return res.status(401).json({ error: 'incorrect password' });
         }
 
         req.session.user = {
-            id: Users[0].UserId,
-            name: Users[0].Name || Users[0].name,
-            email: Users[0].Email
+            id: user._id,
+            name: user.name,
+            email: user.email
         };
 
         req.session.save((err) => {
-            if (err) {
-                return res.status(500).json({ error: 'Session error' });
-            }
+            if (err) return res.status(500).json({ error: 'Session error' });
             res.status(200).json({ message: 'Login successful' });
         });
 
     } catch (err) {
         console.error(err);
-
-        res.status(500).json({
-            error: 'Internal server error'
-        });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -174,10 +173,7 @@ app.get('/api/user', (req, res) => {
     if (!req.session.user) {
         return res.status(401).json({ loggedIn: false });
     }
-    res.json({
-        loggedIn: true,
-        user: req.session.user
-    });
+    res.json({ loggedIn: true, user: req.session.user });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -186,9 +182,7 @@ app.post('/api/logout', (req, res) => {
     }
 
     req.session.destroy((err) => {
-        if (err) {
-            return res.status(500).json({ error: 'Logout failed' });
-        }
+        if (err) return res.status(500).json({ error: 'Logout failed' });
         res.clearCookie('connect.sid');
         res.status(200).json({ message: 'Logged out successfully' });
     });
@@ -202,21 +196,16 @@ app.post('/api/changeUsername', async (req, res) => {
     }
 
     try {
-        const [Users] = await db.query(
-            'SELECT * FROM Users WHERE Name = ?',
-            [req.session.user.name]
+        const result = await User.updateOne(
+            { _id: req.session.user.id },
+            { $set: { name: newName } }
         );
 
-        if (Users.length === 0) {
+        if (result.matchedCount === 0) {
             return res.status(401).json({ error: 'User not found' });
         }
 
-        await db.query(
-            'UPDATE Users SET Name = ? WHERE Name = ?',
-            [newName, req.session.user.name]
-        );
-
-        req.session.user.name = newName;  // update session too
+        req.session.user.name = newName;
 
         req.session.save((err) => {
             if (err) return res.status(500).json({ error: 'Session error' });
@@ -231,8 +220,14 @@ app.post('/api/changeUsername', async (req, res) => {
 
 app.get('/api/admin/users', async (req, res) => {
     try {
-        const [users] = await db.query('SELECT UserId, Name, Email FROM Users');
-        res.json(users);
+        const users = await User.find({}, 'name email blocked');
+        const formattedUsers = users.map(u => ({
+            UserId: u._id,
+            Name: u.name,
+            Email: u.email,
+            blocked: u.blocked
+        }));
+        res.json(formattedUsers);
     } catch (err) {
         console.error('Users query error:', err.message);
         res.status(500).json({ error: err.message });
@@ -242,7 +237,7 @@ app.get('/api/admin/users', async (req, res) => {
 app.post('/api/admin/blockUser', async (req, res) => {
     try {
         const { userId } = req.body;
-        await db.query('UPDATE Users SET blocked = 1 WHERE UserId = ?', [userId]);
+        await User.updateOne({ _id: userId }, { $set: { blocked: 1 } });
         res.json({ message: 'User blocked successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -252,7 +247,7 @@ app.post('/api/admin/blockUser', async (req, res) => {
 app.post('/api/admin/unblockUser', async (req, res) => {
     try {
         const { userId } = req.body;
-        await db.query('UPDATE Users SET blocked = 0 WHERE UserId = ?', [userId]);
+        await User.updateOne({ _id: userId }, { $set: { blocked: 0 } });
         res.json({ message: 'User unblocked successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -262,7 +257,7 @@ app.post('/api/admin/unblockUser', async (req, res) => {
 app.post('/api/admin/changeUsername', async (req, res) => {
     try {
         const { userId, newName } = req.body;
-        await db.query('UPDATE Users SET Name = ? WHERE UserId = ?', [newName, userId]);
+        await User.updateOne({ _id: userId }, { $set: { name: newName } });
         res.json({ message: 'Username changed successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -273,7 +268,7 @@ app.post('/api/admin/changePassword', async (req, res) => {
     try {
         const { userId, newPassword } = req.body;
         const hashed = await bcrypt.hash(newPassword, 10);
-        await db.query('UPDATE Users SET password = ? WHERE UserId = ?', [hashed, userId]);
+        await User.updateOne({ _id: userId }, { $set: { password: hashed } });
         res.json({ message: 'Password changed successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -283,7 +278,7 @@ app.post('/api/admin/changePassword', async (req, res) => {
 app.post('/api/admin/deleteUser', async (req, res) => {
     try {
         const { userId } = req.body;
-        await db.query('DELETE FROM Users WHERE UserId = ?', [userId]);
+        await User.deleteOne({ _id: userId });
         res.json({ message: 'User deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -294,75 +289,40 @@ app.post('/api/order', async (req, res) => {
     const { formData, cart, total } = req.body;
 
     if (!req.session.user) {
-    return res.status(401).json({
-        error: 'You must be logged in to place an order'
-    });
-}
+        return res.status(401).json({ error: 'You must be logged in to place an order' });
+    }
 
     try {
-        if (
-            !formData ||
-            !cart ||
-            cart.length === 0 ||
-            !total
-        ) {
-            return res.status(400).json({
-                error: 'Missing order data'
-            });
+        if (!formData || !cart || cart.length === 0 || !total) {
+            return res.status(400).json({ error: 'Missing order data' });
         }
 
-        const customerId = req.session.user
-            ? req.session.user.id
-            : null;
+        const customerId = req.session.user ? req.session.user.id : null;
 
-        await db.query(
-            `INSERT INTO orders
-            (
-                customer_id,
-                customer_name,
-                customer_surname,
-                phone,
-                email,
-                address,
-                city,
-                zip,
-                cart,
-                total
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                customerId,
-                formData.name,
-                formData.surname,
-                formData.phone,
-                formData.email,
-                formData.address,
-                formData.city,
-                formData.zip,
-                JSON.stringify(cart),
-                total
-            ]
-        );
-
-        res.status(200).json({
-            message: 'Order placed successfully'
+        await Order.create({
+            customer_id: customerId,
+            customer_name: formData.name,
+            customer_surname: formData.surname,
+            phone: formData.phone,
+            email: formData.email,
+            address: formData.address,
+            city: formData.city,
+            zip: formData.zip,
+            cart: cart,
+            total: total
         });
+
+        res.status(200).json({ message: 'Order placed successfully' });
 
     } catch (err) {
         console.error(err);
-
-        res.status(500).json({
-            error: 'Internal server error'
-        });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
 app.get('/api/admin/orders', async (req, res) => {
     try {
-        const [orders] = await db.query(
-            'SELECT * FROM orders ORDER BY created_at DESC'
-        );
-
+        const orders = await Order.find().sort({ created_at: -1 });
         res.json(orders);
     } catch (err) {
         console.error(err);
@@ -374,23 +334,12 @@ app.post('/api/admin/updateOrderStatus', async (req, res) => {
     const { orderId, status } = req.body;
 
     try {
-        const allowedStatuses = [
-            'pending',
-            'processing',
-            'shipped',
-            'completed',
-            'cancelled'
-        ];
-
+        const allowedStatuses = ['pending', 'processing', 'shipped', 'completed', 'cancelled'];
         if (!allowedStatuses.includes(status)) {
             return res.status(400).json({ error: 'Invalid status' });
         }
 
-        await db.query(
-            'UPDATE orders SET status = ? WHERE id = ?',
-            [status, orderId]
-        );
-
+        await Order.updateOne({ _id: orderId }, { $set: { status: status } });
         res.json({ message: 'Status updated successfully' });
 
     } catch (err) {
@@ -407,10 +356,11 @@ app.post('/api/sendMessage', async (req, res) => {
     }
 
     try {
-        await db.query(
-            'INSERT INTO Messages (username, userEmail, message) VALUES (?, ?, ?)',
-            [username, email, message]
-        );
+        await Message.create({
+            username,
+            userEmail: email,
+            message
+        });
 
         res.status(201).json({ message: 'Sent successfully' });
 
@@ -422,10 +372,7 @@ app.post('/api/sendMessage', async (req, res) => {
 
 app.get('/api/admin/messages', async (req, res) => {
     try {
-        const [messages] = await db.query(
-            'SELECT id, username, userEmail, message, created_at FROM Messages ORDER BY created_at DESC'
-        );
-
+        const messages = await Message.find().sort({ created_at: -1 });
         res.json(messages);
     } catch (err) {
         console.error(err);
