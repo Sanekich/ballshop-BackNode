@@ -121,6 +121,16 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
+app.post('/api/admin/login', (req, res) => {
+    const { username, password } = req.body;
+    if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
+        req.session.isAdmin = true;
+        req.session.save(() => res.json({ success: true }));
+    } else {
+        res.status(401).json({ success: false });
+    }
+});
+
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     try {
