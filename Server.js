@@ -5,12 +5,12 @@ const cors = require('cors');
 const session = require('express-session');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
-const MongoStore = require('connect-mongo').default;
+const MongoStore = require('connect-mongo'); // FIX 1: Removed .default to stop the 500 crash
 
 const app = express();
 
 app.use(express.json());
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // Absolutely mandatory for Render to handle HTTPS proxies
 
 const allowedOrigins = [
     'http://localhost:3000',
@@ -36,6 +36,7 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('Connected to MongoDB successfully.'))
     .catch(err => console.error('MongoDB connection error:', err));
 
+// --- Schemas & Models ---
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true, lowercase: true },
@@ -73,6 +74,7 @@ const orderSchema = new mongoose.Schema({
 
 const Order = mongoose.model('Order', orderSchema);
 
+// --- Session Middleware ---
 app.use(session({
     secret: process.env.SESSION_SECRET || 'secret_key',
     resave: false,
@@ -82,46 +84,39 @@ app.use(session({
         collectionName: 'sessions'
     }),
     cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure: true, // Render runs on HTTPS, so always enforce secure cookies
+        sameSite: 'none', // FIX 2: Required to allow cross-domain cookies from Render to Vercel
         httpOnly: true,
         maxAge: 1000 * 60 * 60 * 24 * 7
     }
 }));
 
+// --- API Endpoints ---
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
-
     try {
         if (!username || !email || !password) {
             return res.status(401).json({ error: 'missing fields' });
         }
-
         const existingUser = await User.findOne({ email: email.toLowerCase() });
-
         if (existingUser) {
             return res.status(401).json({ error: 'User with this email already exists' });
         }
-
         const hashedPassword = await bcrypt.hash(password, 10);
-
         const newUser = await User.create({
             name: username,
             email: email.toLowerCase(),
             password: hashedPassword
         });
-
         req.session.user = {
             id: newUser._id,
             name: newUser.name,
             email: newUser.email
         };
-
         req.session.save((err) => {
             if (err) return res.status(500).json({ error: 'Session error' });
             res.status(200).json({ message: 'Register successful' });
         });
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
@@ -130,39 +125,30 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-
     try {
         if (!email || !password) {
             return res.status(401).json({ error: 'missing fields' });
         }
-
         const user = await User.findOne({ email: email.toLowerCase() });
-
         if (!user) {
             return res.status(401).json({ error: 'User not found' });
         }
-
         if (user.blocked === 1) {
             return res.status(401).json({ error: 'User blocked' });
         }
-
         const match = await bcrypt.compare(password, user.password);
-
         if (!match) {
             return res.status(401).json({ error: 'incorrect password' });
         }
-
         req.session.user = {
             id: user._id,
             name: user.name,
             email: user.email
         };
-
         req.session.save((err) => {
             if (err) return res.status(500).json({ error: 'Session error' });
             res.status(200).json({ message: 'Login successful' });
         });
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
@@ -180,38 +166,31 @@ app.post('/api/logout', (req, res) => {
     if (!req.session.user) {
         return res.status(401).json({ loggedIn: false });
     }
-
     req.session.destroy((err) => {
         if (err) return res.status(500).json({ error: 'Logout failed' });
-        res.clearCookie('connect.sid');
+        res.clearCookie('connect.sid', { secure: true, sameSite: 'none' });
         res.status(200).json({ message: 'Logged out successfully' });
     });
 });
 
 app.post('/api/changeUsername', async (req, res) => {
     const { newName } = req.body;
-
     if (!req.session.user) {
         return res.status(401).json({ loggedIn: false });
     }
-
     try {
         const result = await User.updateOne(
             { _id: req.session.user.id },
             { $set: { name: newName } }
         );
-
         if (result.matchedCount === 0) {
             return res.status(401).json({ error: 'User not found' });
         }
-
         req.session.user.name = newName;
-
         req.session.save((err) => {
             if (err) return res.status(500).json({ error: 'Session error' });
             res.status(200).json({ message: 'Username updated successfully' });
         });
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
@@ -287,18 +266,14 @@ app.post('/api/admin/deleteUser', async (req, res) => {
 
 app.post('/api/order', async (req, res) => {
     const { formData, cart, total } = req.body;
-
     if (!req.session.user) {
         return res.status(401).json({ error: 'You must be logged in to place an order' });
     }
-
     try {
         if (!formData || !cart || cart.length === 0 || !total) {
             return res.status(400).json({ error: 'Missing order data' });
         }
-
         const customerId = req.session.user ? req.session.user.id : null;
-
         await Order.create({
             customer_id: customerId,
             customer_name: formData.name,
@@ -311,9 +286,7 @@ app.post('/api/order', async (req, res) => {
             cart: cart,
             total: total
         });
-
         res.status(200).json({ message: 'Order placed successfully' });
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
@@ -332,16 +305,13 @@ app.get('/api/admin/orders', async (req, res) => {
 
 app.post('/api/admin/updateOrderStatus', async (req, res) => {
     const { orderId, status } = req.body;
-
     try {
         const allowedStatuses = ['pending', 'processing', 'shipped', 'completed', 'cancelled'];
         if (!allowedStatuses.includes(status)) {
             return res.status(400).json({ error: 'Invalid status' });
         }
-
         await Order.updateOne({ _id: orderId }, { $set: { status: status } });
         res.json({ message: 'Status updated successfully' });
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server error' });
@@ -350,20 +320,16 @@ app.post('/api/admin/updateOrderStatus', async (req, res) => {
 
 app.post('/api/sendMessage', async (req, res) => {
     const { username, email, message } = req.body;
-
     if (!req.session.user) {
         return res.status(401).json({ error: "User not logged in" });
     }
-
     try {
         await Message.create({
             username,
             userEmail: email,
             message
         });
-
         res.status(201).json({ message: 'Sent successfully' });
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server error' });
@@ -380,6 +346,7 @@ app.get('/api/admin/messages', async (req, res) => {
     }
 });
 
-app.listen(5000, () => {
-    console.log('Server running on port 5000');
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
