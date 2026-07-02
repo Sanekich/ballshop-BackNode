@@ -16,6 +16,9 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": "22.x"
+  },
   "bugs": {
     "url": "https://github.com/Sanekich/ballshop-Back/issues"
   },
