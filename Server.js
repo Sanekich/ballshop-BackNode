@@ -5,7 +5,7 @@ const cors = require('cors');
 const session = require('express-session');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
-const MongoStore = require('connect-mongo'); // FIX 1: Removed .default to stop the 500 crash
+const MongoStore = require('connect-mongo')(session); // FIX 1: Removed .default to stop the 500 crash
 
 const app = express();
 
@@ -76,19 +76,12 @@ const Order = mongoose.model('Order', orderSchema);
 
 // --- Session Middleware ---
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'secret_key',
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    store: MongoStore.create({
-        mongoUrl: MONGO_URI,
-        collectionName: 'sessions'
-    }),
-    cookie: {
-        secure: true, // Render runs on HTTPS, so always enforce secure cookies
-        sameSite: 'none', // FIX 2: Required to allow cross-domain cookies from Render to Vercel
-        httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24 * 7
-    }
+    store: new MongoStore({ 
+        url: process.env.MONGO_URI // Note: Old versions use 'url', not 'mongoUrl'
+    })
 }));
 
 // --- API Endpoints ---
