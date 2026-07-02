@@ -5,7 +5,7 @@ const cors = require('cors');
 const session = require('express-session');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
-const MongoStore = require('connect-mongo')(session); // FIX 1: Removed .default to stop the 500 crash
+const { MongoStore } = require('connect-mongo'); // FIX 1: Removed .default to stop the 500 crash
 
 const app = express();
 
@@ -74,16 +74,21 @@ const orderSchema = new mongoose.Schema({
 
 const Order = mongoose.model('Order', orderSchema);
 
-// --- Session Middleware ---
 app.use(session({
-    secret: process.env.SESSION_SECRET,
+    secret: process.env.SESSION_SECRET || 'secret_key',
     resave: false,
     saveUninitialized: false,
-    store: new MongoStore({ 
-        url: process.env.MONGO_URI // Note: Old versions use 'url', not 'mongoUrl'
-    })
+    store: MongoStore.create({ // Correct method for modern versions
+        mongoUrl: MONGO_URI,
+        collectionName: 'sessions'
+    }),
+    cookie: {
+        secure: true, 
+        sameSite: 'none', 
+        httpOnly: true,
+        maxAge: 1000 * 60 * 60 * 24 * 7
+    }
 }));
-
 // --- API Endpoints ---
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
